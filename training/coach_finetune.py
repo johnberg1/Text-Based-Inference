@@ -226,9 +226,9 @@ class Coach:
 				f.write(f'Step - {self.global_step}, \n{loss_dict}\n')
 
 	def configure_optimizers(self):
-		params = list(self.net.encoder.parameters())
+		#params = list(self.net.encoder.parameters())
 		if self.opts.train_decoder:
-			params += list(self.net.decoder.parameters())
+			params = list(self.net.decoder.parameters())
 		if self.opts.optim_name == 'adam':
 			optimizer = torch.optim.Adam(params, lr=self.opts.learning_rate)
 		else:
@@ -300,7 +300,7 @@ class Coach:
 		loss_clip = self.clip_loss(y_hat, text).diag().mean()
 		loss_dict[f'loss_clip_{data_type}'] = float(loss_clip)
 		#loss_clip = float(loss_clip)
-		loss += loss_clip * 2.0
+		loss += loss_clip * 2.5
    
 		loss_dict[f'loss_{data_type}'] = float(loss)
 		if data_type == "cycle":

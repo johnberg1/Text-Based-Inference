@@ -19,10 +19,10 @@ from datasets.augmentations import AgeTransformer
 from criteria.lpips.lpips import LPIPS
 from criteria.aging_loss import AgingLoss
 from criteria.clip_loss import CLIPLoss
-from models.psp import pSp
+from models.psp_ada import pSp
 from training.ranger import Ranger
 import clip
-
+import sys
 
 class Coach:
 	def __init__(self, opts):
@@ -89,6 +89,7 @@ class Coach:
 		self.net.train()
 		while self.global_step < self.opts.max_steps:
 			for batch_idx, batch in enumerate(self.train_dataloader):
+        
 				x, y, txt = batch
 				x, y = x.to(self.device).float(), y.to(self.device).float()
 				text_original = clip.tokenize(txt).to(self.device)
@@ -227,6 +228,9 @@ class Coach:
 
 	def configure_optimizers(self):
 		params = list(self.net.encoder.parameters())
+		params += self.net.decoder.adain1.parameters()
+		params += self.net.decoder.adain2.parameters()
+		params += self.net.decoder.adain3.parameters()
 		if self.opts.train_decoder:
 			params += list(self.net.decoder.parameters())
 		if self.opts.optim_name == 'adam':
@@ -300,7 +304,7 @@ class Coach:
 		loss_clip = self.clip_loss(y_hat, text).diag().mean()
 		loss_dict[f'loss_clip_{data_type}'] = float(loss_clip)
 		#loss_clip = float(loss_clip)
-		loss += loss_clip * 2.0
+		loss += loss_clip * 1.5
    
 		loss_dict[f'loss_{data_type}'] = float(loss)
 		if data_type == "cycle":
