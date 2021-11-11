@@ -18,11 +18,11 @@ from datasets.images_text_dataset import ImagesTextDataset
 from datasets.augmentations import AgeTransformer
 from criteria.lpips.lpips import LPIPS
 from criteria.aging_loss import AgingLoss
-from criteria.clip_loss import CLIPLoss
+from criteria.clip_loss import CLIPLoss, DirectionalCLIPLoss
 from models.psp_ada import pSp
 from training.ranger import Ranger
 import clip
-import sys
+
 
 class Coach:
 	def __init__(self, opts):
@@ -47,6 +47,7 @@ class Coach:
 		if self.opts.aging_lambda > 0:
 			self.aging_loss = AgingLoss(self.opts)
 		self.clip_loss = CLIPLoss(self.clip_model)
+		self.directional_loss = DirectionalCLIPLoss(self.clip_model)
 
 		# Initialize optimizer
 		self.optimizer = self.configure_optimizers()
@@ -89,7 +90,6 @@ class Coach:
 		self.net.train()
 		while self.global_step < self.opts.max_steps:
 			for batch_idx, batch in enumerate(self.train_dataloader):
-        
 				x, y, txt = batch
 				x, y = x.to(self.device).float(), y.to(self.device).float()
 				text_original = clip.tokenize(txt).to(self.device)
@@ -108,7 +108,7 @@ class Coach:
 
 				# perform forward/backward pass on real images
 				y_hat, latent = self.perform_forward_pass(x, txt_embed_mismatch)
-				loss, loss_dict, id_logs = self.calc_loss(x, y, y_hat, text_mismatch, latent, data_type="real")
+				loss, loss_dict, id_logs = self.calc_loss(x, y, y_hat, text_original, text_mismatch, latent, y, mismatch_text, data_type="real")
 				loss.backward()
 
 				# perform cycle on generate images by setting the target ages to the original input ages
@@ -117,7 +117,7 @@ class Coach:
 				text_clone = text_original
         
 				y_recovered, latent_cycle = self.perform_forward_pass(y_hat_clone, txt_embed_clone)
-				loss, cycle_loss_dict, cycle_id_logs = self.calc_loss(x, y, y_recovered, text_clone, latent_cycle,data_type="cycle")
+				loss, cycle_loss_dict, cycle_id_logs = self.calc_loss(x, y, y_recovered, text_mismatch, text_clone, latent_cycle, y_hat_clone, mismatch_text, data_type="cycle")
         
 				loss.backward()
 				self.optimizer.step()
@@ -181,14 +181,14 @@ class Coach:
 
 				# perform forward/backward pass on real images
 				y_hat, latent = self.perform_forward_pass(x, txt_embed_mismatch)
-				_, cur_loss_dict, id_logs = self.calc_loss(x, y, y_hat, text_mismatch, latent, data_type="real")
+				_, cur_loss_dict, id_logs = self.calc_loss(x, y, y_hat, text_original, text_mismatch, latent, y, mismatch_text, data_type="real")
 
 				# perform cycle on generate images by setting the target ages to the original input ages
 				y_hat_clone = y_hat.clone().detach().requires_grad_(True)
 				txt_embed_clone = txt_embed_original.clone().detach().requires_grad_(True)
 				text_clone = text_original
 				y_recovered, latent_cycle = self.perform_forward_pass(y_hat_clone, txt_embed_clone)
-				loss, cycle_loss_dict, cycle_id_logs = self.calc_loss(x, y, y_recovered, text_clone, latent_cycle, data_type="cycle")
+				loss, cycle_loss_dict, cycle_id_logs = self.calc_loss(x, y, y_recovered, text_mismatch, text_clone, latent_cycle, y_hat_clone, mismatch_text, data_type="cycle")
 
 				# combine the logs of both forwards
 				for idx, cycle_log in enumerate(cycle_id_logs):
@@ -227,10 +227,8 @@ class Coach:
 				f.write(f'Step - {self.global_step}, \n{loss_dict}\n')
 
 	def configure_optimizers(self):
-		params = list(self.net.encoder.parameters())
-		params += self.net.decoder.adain1.parameters()
-		params += self.net.decoder.adain2.parameters()
-		params += self.net.decoder.adain3.parameters()
+		# params = list(self.net.encoder.parameters())
+		params = list(self.net.decoder.adains.parameters())
 		if self.opts.train_decoder:
 			params += list(self.net.decoder.parameters())
 		if self.opts.optim_name == 'adam':
@@ -259,7 +257,7 @@ class Coach:
 		print(f"Number of test samples: {len(test_dataset)}")
 		return train_dataset, test_dataset
 
-	def calc_loss(self, x, y, y_hat, text, latent, data_type="real"):
+	def calc_loss(self, x, y, y_hat, source_text, target_text, latent, directional_source, mismatch_text, data_type="real"):
 		loss_dict = {}
 		id_logs = []
 		loss = 0.0
@@ -301,10 +299,13 @@ class Coach:
 			loss_dict[f'loss_w_norm_{data_type}'] = float(loss_w_norm)
 			loss += loss_w_norm * self.opts.w_norm_lambda
 		# CLIP loss
-		loss_clip = self.clip_loss(y_hat, text).diag().mean()
-		loss_dict[f'loss_clip_{data_type}'] = float(loss_clip)
-		#loss_clip = float(loss_clip)
-		loss += loss_clip * 1.5
+		#loss_clip = self.clip_loss(y_hat, target_text).diag().mean()
+		#loss_dict[f'loss_clip_{data_type}'] = float(loss_clip)
+		#loss += loss_clip * 1.0
+		if mismatch_text: 
+			loss_directional = self.directional_loss(directional_source, y_hat, source_text, target_text).mean()
+			loss_dict[f'loss_directional_{data_type}'] = float(loss_directional)
+			loss += loss_directional * 1.0
    
 		loss_dict[f'loss_{data_type}'] = float(loss)
 		if data_type == "cycle":

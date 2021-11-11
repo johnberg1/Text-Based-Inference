@@ -1,7 +1,9 @@
 dataset_paths = {
-    'celeba_train': '/scratch/users/abaykal20/e4e/encoder4editing/train_images',
-    'celeba_test': '/scratch/users/abaykal20/e4e/encoder4editing/test_images',
+    'celeba_train': '/scratch/users/abaykal20/sam/SAM/mmcelebhq/train_images',
+    'celeba_test': '/scratch/users/abaykal20/sam/SAM/mmcelebhq/test_images',
     'ffhq': '',
+    'overfit': '/scratch/users/abaykal20/sam/SAM/overfit_image',
+    'overfit_target': '/scratch/users/abaykal20/sam/SAM/overfit_image_target'
 }
 
 model_paths = {

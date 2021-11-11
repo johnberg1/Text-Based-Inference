@@ -11,7 +11,7 @@ import math
 from configs.paths_config import model_paths
 from models.encoders import psp_encoders
 from models.encoders import psp_encoders_adain
-from models.stylegan2.model_ada import Generator
+from models.stylegan2.model_ada4_all import Generator
 
 
 class pSp(nn.Module):
@@ -35,7 +35,7 @@ class pSp(nn.Module):
 			print(f'Loading SAM from checkpoint: {self.opts.checkpoint_path}')
 			ckpt = torch.load(self.opts.checkpoint_path, map_location='cpu')
 			self.encoder.load_state_dict(self.__get_keys(ckpt, 'encoder'), strict=False)
-			self.decoder.load_state_dict(self.__get_keys(ckpt, 'decoder'), strict=True)
+			self.decoder.load_state_dict(self.__get_keys(ckpt, 'decoder'), strict=False) # CHANGED
 			if self.opts.start_from_encoded_w_plus:
 				self.pretrained_encoder = self.__get_pretrained_psp_encoder()
 				self.pretrained_encoder.load_state_dict(self.__get_keys(ckpt, 'pretrained_encoder'), strict=True)

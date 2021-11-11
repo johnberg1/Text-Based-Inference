@@ -33,6 +33,24 @@ def vis_faces(log_hooks, txt, mismatch_text):
 		vis_faces_with_age(hooks_dict, fig, gs, i)
 	plt.tight_layout()
 	return fig
+ 
+def vis_faces_two(log_hooks, txt, mismatch_text):
+	display_count = len(log_hooks)
+	fig = plt.figure(figsize=(12, 4 * display_count))
+	gs = fig.add_gridspec(display_count, 4)
+	#plt.gcf().text(0.02, 0.52, 'Original: {}'.format(txt[0]), fontsize=8)
+	if mismatch_text:
+		#plt.gcf().text(0.02, 0.49, 'Mismatch: {}'.format(txt[0]), fontsize=8)
+		plt.gcf().text(0.02, 0.01, 'Mismatch: {}'.format(txt[0]), fontsize=8)
+	else:
+		#plt.gcf().text(0.02, 0.49, 'Mismatch: {}'.format(txt[0]), fontsize=8)
+		plt.gcf().text(0.02, 0.01, 'Mismatch: {}'.format(txt[0]), fontsize=8)
+	plt.gcf().text(0.02, 0.04, 'Original: {}'.format(txt[0]), fontsize=8)
+	for i in range(display_count):
+		hooks_dict = log_hooks[i]
+		vis_faces_with_age(hooks_dict, fig, gs, i)
+	plt.tight_layout()
+	return fig
 
 
 def vis_faces_with_age(hooks_dict, fig, gs, i):
@@ -48,4 +66,4 @@ def vis_faces_with_age(hooks_dict, fig, gs, i):
 	plt.title('Output\nTarget Sim={:.2f}\n'.format(float(hooks_dict['diff_target_real'])))
 	fig.add_subplot(gs[i, 3])
 	plt.imshow(hooks_dict['recovered_face'])
-	plt.title('Recovered\nTarget Sim={:.2f}\n'.format(float(hooks_dict['diff_target_cycle'])))
+	plt.title('Recovered\nTarget Sim={:.2f}\n'.format(float(hooks_dict['diff_target_real'])))

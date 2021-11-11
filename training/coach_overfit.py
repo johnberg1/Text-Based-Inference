@@ -14,14 +14,16 @@ from utils import common, train_utils
 from criteria import id_loss, w_norm
 from configs import data_configs
 from datasets.images_dataset import ImagesDataset
-from datasets.images_text_dataset import ImagesTextDataset
+from datasets.overfit_dataset import ImagesTextDataset
 from datasets.augmentations import AgeTransformer
 from criteria.lpips.lpips import LPIPS
 from criteria.aging_loss import AgingLoss
-from criteria.clip_loss import CLIPLoss
-from models.psp import pSp
+from criteria.clip_loss import CLIPLoss, DirectionalCLIPLoss
+from models.psp_ada import pSp
 from training.ranger import Ranger
 import clip
+import torchvision
+import sys
 
 
 class Coach:
@@ -35,8 +37,7 @@ class Coach:
 
 		# Initialize network
 		self.net = pSp(self.opts).to(self.device)
-    self.clip_model, self.clip_preprocess = clip.load("ViT-B/32", device=self.device)
-
+		self.clip_model, self.clip_preprocess = clip.load("ViT-B/32", device = self.device)
 		# Initialize loss
 		self.mse_loss = nn.MSELoss().to(self.device).eval()
 		if self.opts.lpips_lambda > 0:
@@ -47,8 +48,9 @@ class Coach:
 			self.w_norm_loss = w_norm.WNormLoss(opts=self.opts)
 		if self.opts.aging_lambda > 0:
 			self.aging_loss = AgingLoss(self.opts)
-    self.clip_loss = CLIPLoss(self.clip_model)
-
+		self.clip_loss = CLIPLoss(self.clip_model)
+		self.directional_loss = DirectionalCLIPLoss(self.clip_model)
+   
 		# Initialize optimizer
 		self.optimizer = self.configure_optimizers()
 
@@ -91,47 +93,54 @@ class Coach:
 		while self.global_step < self.opts.max_steps:
 			for batch_idx, batch in enumerate(self.train_dataloader):
 				x, y, txt = batch
+				txt_org = ("This woman has big lips, wavy hair, arched eyebrows, and pointy nose and is wearing necklace, and heavy makeup.",)
 				x, y = x.to(self.device).float(), y.to(self.device).float()
-        text_original = clip.tokenize(txt).to(self.device)
-        with torch.no_grad():
-          txt_embed_original = self.clip_model.encode_text(text_original)
-        txt_embed_original = txt_embed_original.to(self.device).float()
+				text_original = clip.tokenize(txt).to(self.device)
+				text_source = clip.tokenize(txt_org).to(self.device)
+				with torch.no_grad():
+					txt_embed_original = self.clip_model.encode_text(text_original)
+				txt_embed_original = txt_embed_original.to(self.device).float()
 				self.optimizer.zero_grad()
         
 				mismatch_text = random.random() <= (3. / 4)
-				if mismatch_text:
-					txt_embed_mismatch = torch.roll(txt_embed_original, 1, dims=0)
-					text_mismatch = torch.roll(text_original, 1, dims=0)
-        else:
-          txt_embed_mismatch = txt_embed_original
-          text_mismatch = text_original
+				#if mismatch_text:
+				#	txt_embed_mismatch = torch.roll(txt_embed_original, 1, dims=0)
+				#	text_mismatch = torch.roll(text_original, 1, dims=0)
+				#else:
+				#	txt_embed_mismatch = txt_embed_original
+				#	text_mismatch = text_original
+				txt_embed_mismatch = txt_embed_original
+				text_mismatch = text_original
+				
 
 				# perform forward/backward pass on real images
 				y_hat, latent = self.perform_forward_pass(x, txt_embed_mismatch)
-				loss, loss_dict, id_logs = self.calc_loss(x, y, y_hat, latent, data_type="real")
+				loss, loss_dict, id_logs = self.calc_loss(x, y, y_hat, text_source, text_mismatch, latent, y, data_type="real")
 				loss.backward()
+				y_recovered = y_hat
+				val_loss_dict = None
 
 				# perform cycle on generate images by setting the target ages to the original input ages
-				y_hat_clone = y_hat.clone().detach().requires_grad_(True)
-	      txt_embed_clone = txt_embed_original.clone().detach().requires_grad_(True)
-        text_clone = text_original
+				#y_hat_clone = y_hat.clone().detach().requires_grad_(True)
+				#txt_embed_clone = txt_embed_original.clone().detach().requires_grad_(True)
+				#text_clone = text_original
         
-				y_recovered, latent_cycle = self.perform_forward_pass(y_hat_clone, txt_embed_clone)
-				loss, cycle_loss_dict, cycle_id_logs = self.calc_loss(x, y, y_recovered, latent_cycle,data_type="cycle")
+				#y_recovered, latent_cycle = self.perform_forward_pass(y_hat_clone, txt_embed_clone)
+				#loss, cycle_loss_dict, cycle_id_logs = self.calc_loss(x, y, y_recovered, text_clone, latent_cycle,data_type="cycle")
         
-				loss.backward()
+				#loss.backward()
 				self.optimizer.step()
 
 				# combine the logs of both forwards
-				for idx, cycle_log in enumerate(cycle_id_logs):
-					id_logs[idx].update(cycle_log)
-				loss_dict.update(cycle_loss_dict)
-				loss_dict["loss"] = loss_dict["loss_real"] + loss_dict["loss_cycle"]
+				#for idx, cycle_log in enumerate(cycle_id_logs):
+				#	id_logs[idx].update(cycle_log)
+				#loss_dict.update(cycle_loss_dict)
+				#loss_dict["loss"] = loss_dict["loss_real"] + loss_dict["loss_cycle"]
 
 				# Logging related
 				if self.global_step % self.opts.image_interval == 0 or \
 						(self.global_step < 1000 and self.global_step % 25 == 0):
-					self.parse_and_log_images(id_logs, x, y, y_hat, y_recovered, txt,
+					self.parse_and_log_images(id_logs, x, y, y_hat, y_recovered, txt, mismatch_text,
 											  title='images/train/faces')
 
 				if self.global_step % self.opts.board_interval == 0:
@@ -139,18 +148,18 @@ class Coach:
 					self.log_metrics(loss_dict, prefix='train')
 
 				# Validation related
-				val_loss_dict = None
-				if self.global_step % self.opts.val_interval == 0 or self.global_step == self.opts.max_steps:
-					val_loss_dict = self.validate()
-					if val_loss_dict and (self.best_val_loss is None or val_loss_dict['loss'] < self.best_val_loss):
-						self.best_val_loss = val_loss_dict['loss']
-						self.checkpoint_me(val_loss_dict, is_best=True)
+				#val_loss_dict = None
+				#if self.global_step % self.opts.val_interval == 0 or self.global_step == self.opts.max_steps:
+				#	val_loss_dict = self.validate()
+				#	if val_loss_dict and (self.best_val_loss is None or val_loss_dict['loss'] < self.best_val_loss):
+				#		self.best_val_loss = val_loss_dict['loss']
+				#		self.checkpoint_me(val_loss_dict, is_best=True)
 
-				if self.global_step % self.opts.save_interval == 0 or self.global_step == self.opts.max_steps:
-					if val_loss_dict is not None:
-						self.checkpoint_me(val_loss_dict, is_best=False)
-					else:
-						self.checkpoint_me(loss_dict, is_best=False)
+				# if self.global_step % self.opts.save_interval == 0 or self.global_step == self.opts.max_steps:
+				# 	if val_loss_dict is not None:
+				# 		self.checkpoint_me(val_loss_dict, is_best=False)
+				# 	else:
+				# 		self.checkpoint_me(loss_dict, is_best=False)
 
 				if self.global_step == self.opts.max_steps:
 					print('OMG, finished training!')
@@ -163,32 +172,32 @@ class Coach:
 		agg_loss_dict = []
 		for batch_idx, batch in enumerate(self.test_dataloader):
 			x, y, txt = batch
-      text_original = clip.tokenize(txt).to(self.device)
+			text_original = clip.tokenize(txt).to(self.device)
 			with torch.no_grad():
-        txt_embed_original = self.clip_model.encode_text(text_original)
-        txt_embed_original = txt_embed_original.to(self.device).float()
+				txt_embed_original = self.clip_model.encode_text(text_original)
+				txt_embed_original = txt_embed_original.to(self.device).float()
 				x, y = x.to(self.device).float(), y.to(self.device).float()
 
-				input_ages = self.aging_loss.extract_ages(x) / 100.
+				
 
 				mismatch_text = random.random() <= (3. / 4)
 				if mismatch_text:
 					txt_embed_mismatch = torch.roll(txt_embed_original, 1, dims=0)
 					text_mismatch = torch.roll(text_original, 1, dims=0)
-        else:
-          txt_embed_mismatch = txt_embed_original
-          text_mismatch = text_original
+				else:
+					txt_embed_mismatch = txt_embed_original
+					text_mismatch = text_original
 
 				# perform forward/backward pass on real images
-				y_hat, latent = self.perform_forward_pass(x_input, txt_embed_mismatch)
-				_, cur_loss_dict, id_logs = self.calc_loss(x, y, y_hat, latent, data_type="real")
+				y_hat, latent = self.perform_forward_pass(x, txt_embed_mismatch)
+				_, cur_loss_dict, id_logs = self.calc_loss(x, y, y_hat, text_mismatch, latent, data_type="real")
 
 				# perform cycle on generate images by setting the target ages to the original input ages
 				y_hat_clone = y_hat.clone().detach().requires_grad_(True)
-	      txt_embed_clone = txt_embed_original.clone().detach().requires_grad_(True)
-        text_clone = text_original
+				txt_embed_clone = txt_embed_original.clone().detach().requires_grad_(True)
+				text_clone = text_original
 				y_recovered, latent_cycle = self.perform_forward_pass(y_hat_clone, txt_embed_clone)
-				loss, cycle_loss_dict, cycle_id_logs = self.calc_loss(x, y, y_recovered, latent_cycle, data_type="cycle")
+				loss, cycle_loss_dict, cycle_id_logs = self.calc_loss(x, y, y_recovered, text_clone, latent_cycle, data_type="cycle")
 
 				# combine the logs of both forwards
 				for idx, cycle_log in enumerate(cycle_id_logs):
@@ -199,7 +208,7 @@ class Coach:
 			agg_loss_dict.append(cur_loss_dict)
 
 			# Logging related
-			self.parse_and_log_images(id_logs, x, y, y_hat, y_recovered, txt, title='images/test/faces',
+			self.parse_and_log_images(id_logs, x, y, y_hat, y_recovered, txt, mismatch_text, title='images/test/faces',
 									  subscript='{:04d}'.format(batch_idx))
 
 			# For first step just do sanity test on small amount of data
@@ -227,7 +236,10 @@ class Coach:
 				f.write(f'Step - {self.global_step}, \n{loss_dict}\n')
 
 	def configure_optimizers(self):
-		params = list(self.net.encoder.parameters())
+		#params = list(self.net.encoder.parameters())
+		params = list(self.net.decoder.adain1.parameters())
+		params += list(self.net.decoder.adain2.parameters())
+		params += list(self.net.decoder.adain3.parameters())
 		if self.opts.train_decoder:
 			params += list(self.net.decoder.parameters())
 		if self.opts.optim_name == 'adam':
@@ -246,17 +258,17 @@ class Coach:
 									  target_root=dataset_args['train_target_root'],
 									  source_transform=transforms_dict['transform_source'],
 									  target_transform=transforms_dict['transform_gt_train'],
-									  opts=self.opts)
+									  opts=self.opts, train=True)
 		test_dataset = ImagesTextDataset(source_root=dataset_args['test_source_root'],
 									 target_root=dataset_args['test_target_root'],
 									 source_transform=transforms_dict['transform_source'],
 									 target_transform=transforms_dict['transform_test'],
-									 opts=self.opts)
+									 opts=self.opts, train=False)
 		print(f"Number of training samples: {len(train_dataset)}")
 		print(f"Number of test samples: {len(test_dataset)}")
 		return train_dataset, test_dataset
 
-	def calc_loss(self, x, y, y_hat, latent, data_type="real"):
+	def calc_loss(self, x, y, y_hat, source_text, target_text, latent, directional_source, data_type="real"):
 		loss_dict = {}
 		id_logs = []
 		loss = 0.0
@@ -272,7 +284,7 @@ class Coach:
 		if self.opts.l2_lambda > 0:
 			loss_l2 = F.mse_loss(y_hat, y)
 			loss_dict[f'loss_l2_{data_type}'] = float(loss_l2)
-			if data_type == "real" and not no_aging:
+			if data_type == "real":
 				l2_lambda = self.opts.l2_lambda_aging
 			else:
 				l2_lambda = self.opts.l2_lambda
@@ -280,7 +292,7 @@ class Coach:
 		if self.opts.lpips_lambda > 0:
 			loss_lpips = self.lpips_loss(y_hat, y)
 			loss_dict[f'loss_lpips_{data_type}'] = float(loss_lpips)
-			if data_type == "real" and not no_aging:
+			if data_type == "real":
 				lpips_lambda = self.opts.lpips_lambda_aging
 			else:
 				lpips_lambda = self.opts.lpips_lambda
@@ -293,15 +305,17 @@ class Coach:
 			loss_l2_crop = F.mse_loss(y_hat[:, :, 35:223, 32:220], y[:, :, 35:223, 32:220])
 			loss_dict['loss_l2_crop'] = float(loss_l2_crop)
 			loss += loss_l2_crop * self.opts.l2_lambda_crop
-		if self.opts.w_norm_lambda > 0:
-			loss_w_norm = self.w_norm_loss(latent, latent_avg=self.net.latent_avg)
-			loss_dict[f'loss_w_norm_{data_type}'] = float(loss_w_norm)
-			loss += loss_w_norm * self.opts.w_norm_lambda
+		#if self.opts.w_norm_lambda > 0:
+			#loss_w_norm = self.w_norm_loss(latent, latent_avg=self.net.latent_avg)
+			#loss_dict[f'loss_w_norm_{data_type}'] = float(loss_w_norm)
+			#loss += loss_w_norm * self.opts.w_norm_lambda
 		# CLIP loss
-    loss_clip = self.clip_loss(y_hat, text).diag().mean()
-    loss_dict[f'loss_clip_{data_type}'] = float(loss_clip)
-    loss_clip = float(loss_clip)
-    loss += loss_clip * 0.5
+		#loss_clip = self.clip_loss(y_hat, target_text).diag().mean()
+		#loss_dict[f'loss_clip_{data_type}'] = float(loss_clip)
+		#loss += loss_clip * 1.5
+		loss_directional = self.directional_loss(directional_source, y_hat, source_text, target_text).mean()
+		loss_dict[f'loss_directional_{data_type}'] = float(loss_directional)
+		loss += loss_directional * 1.0
    
 		loss_dict[f'loss_{data_type}'] = float(loss)
 		if data_type == "cycle":
@@ -317,7 +331,7 @@ class Coach:
 		for key, value in metrics_dict.items():
 			print(f'\t{key} = ', value)
 
-	def parse_and_log_images(self, id_logs, x, y, y_hat, y_recovered, txt, title, subscript=None, display_count=2):
+	def parse_and_log_images(self, id_logs, x, y, y_hat, y_recovered, txt, mismatch_text, title, subscript=None, display_count=1):
 		im_data = []
 		for i in range(display_count):
 			cur_im_data = {
@@ -330,10 +344,10 @@ class Coach:
 				for key in id_logs[i]:
 					cur_im_data[key] = id_logs[i][key]
 			im_data.append(cur_im_data)
-		self.log_images(title, txt[:2], im_data=im_data, subscript=subscript)
+		self.log_images(title, txt, mismatch_text, im_data=im_data, subscript=subscript)
 
-	def log_images(self, name, txt, im_data, subscript=None, log_latest=False):
-		fig = common.vis_faces(im_data, txt)
+	def log_images(self, name, txt, mismatch_text, im_data, subscript=None, log_latest=False):
+		fig = common.vis_faces_two(im_data, txt, mismatch_text)
 		step = self.global_step
 		if log_latest:
 			step = 0

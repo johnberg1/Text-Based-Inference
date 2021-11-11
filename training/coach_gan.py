@@ -3,6 +3,8 @@ import random
 import matplotlib
 import matplotlib.pyplot as plt
 matplotlib.use('Agg')
+import sys
+sys.path.append('stylegan2_ada_pytorch')
 
 import torch
 from torch import nn
@@ -19,9 +21,11 @@ from datasets.augmentations import AgeTransformer
 from criteria.lpips.lpips import LPIPS
 from criteria.aging_loss import AgingLoss
 from criteria.clip_loss import CLIPLoss, DirectionalCLIPLoss
-from models.psp import pSp
+from criteria.gan_loss import GeneratorLoss
+from models.psp_ada import pSp
 from training.ranger import Ranger
 import clip
+import pickle
 
 
 class Coach:
@@ -48,6 +52,10 @@ class Coach:
 			self.aging_loss = AgingLoss(self.opts)
 		self.clip_loss = CLIPLoss(self.clip_model)
 		self.directional_loss = DirectionalCLIPLoss(self.clip_model)
+		with open('pretrained_models/stylegan2-celeba.pkl','rb') as f:
+			self.Discriminator = pickle.load(f)['D'].to(self.device)
+		self.generator_loss = GeneratorLoss(self.Discriminator)
+        
 
 		# Initialize optimizer
 		self.optimizer = self.configure_optimizers()
@@ -227,7 +235,8 @@ class Coach:
 				f.write(f'Step - {self.global_step}, \n{loss_dict}\n')
 
 	def configure_optimizers(self):
-		params = list(self.net.encoder.parameters())
+		# params = list(self.net.encoder.parameters())
+		params = list(self.net.decoder.adains.parameters())
 		if self.opts.train_decoder:
 			params += list(self.net.decoder.parameters())
 		if self.opts.optim_name == 'adam':
@@ -301,6 +310,9 @@ class Coach:
 		#loss_clip = self.clip_loss(y_hat, target_text).diag().mean()
 		#loss_dict[f'loss_clip_{data_type}'] = float(loss_clip)
 		#loss += loss_clip * 1.0
+		loss_generator = self.generator_loss(y_hat).mean()
+		loss_dict[f'loss_generator_{data_type}'] = float(loss_generator)
+		loss += loss_generator * 1.0
 		if mismatch_text: 
 			loss_directional = self.directional_loss(directional_source, y_hat, source_text, target_text).mean()
 			loss_dict[f'loss_directional_{data_type}'] = float(loss_directional)

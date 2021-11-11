@@ -10,7 +10,7 @@ sys.path.append(".")
 sys.path.append("..")
 
 from options.train_options import TrainOptions
-from training.coach_gan import Coach
+from training.coach_overfit import Coach
 
 
 def main():

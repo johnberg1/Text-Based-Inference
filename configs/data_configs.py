@@ -16,5 +16,12 @@ DATASETS = {
 		'train_target_root': dataset_paths['ffhq'],
 		'test_source_root': dataset_paths['celeba_test'],
 		'test_target_root': dataset_paths['celeba_test'],
+	},
+	'overfit': {
+		'transforms': transforms_config.OverfitTransforms,
+		'train_source_root': dataset_paths['overfit'],
+		'train_target_root': dataset_paths['overfit_target'],
+		'test_source_root': dataset_paths['overfit'],
+		'test_target_root': dataset_paths['overfit_target'],
 	}
 }

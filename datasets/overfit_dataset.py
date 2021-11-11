@@ -13,9 +13,9 @@ class ImagesTextDataset(Dataset):
         self.opts = opts
         self.train = train
         if train:
-            self.text_paths_dir = '/scratch/users/abaykal20/sam/SAM/mmcelebhq/train_captions/'
+            self.text_paths_dir = '/scratch/users/abaykal20/sam/SAM/overfit_caption'
         else:
-            self.text_paths_dir = '/scratch/users/abaykal20/sam/SAM/mmcelebhq/test_captions/'
+            self.text_paths_dir = '/scratch/users/abaykal20/sam/SAM/overfit_caption'
         self.text_paths = sorted(data_utils.make_text_dataset(self.text_paths_dir))
 
     def __len__(self):
