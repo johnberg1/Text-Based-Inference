@@ -11,10 +11,11 @@ from torch.utils.tensorboard import SummaryWriter
 import torch.nn.functional as F
 
 from utils import common, train_utils
-from criteria import id_loss, w_norm
+from criteria import id_loss, w_norm, moco_loss
 from configs import data_configs
 from datasets.images_dataset import ImagesDataset
 from datasets.images_text_dataset import ImagesTextDataset
+from datasets.images_text_dataset import LMDBDataset
 from datasets.augmentations import AgeTransformer
 from criteria.lpips.lpips import LPIPS
 from criteria.aging_loss import AgingLoss
@@ -22,6 +23,7 @@ from criteria.clip_loss import CLIPLoss, DirectionalCLIPLoss
 from models.psp import pSp
 from training.ranger import Ranger
 import clip
+import lmdb
 
 
 class Coach:
@@ -35,8 +37,12 @@ class Coach:
 
 		# Initialize network
 		self.net = pSp(self.opts).to(self.device)
+		if self.net.latent_avg is None:
+			self.net.latent_avg = self.net.decoder.mean_latent(int(1e5))[0].detach()
 		self.clip_model, self.clip_preprocess = clip.load("ViT-B/32", device = self.device)
 		# Initialize loss
+		if self.opts.id_lambda > 0 and self.opts.moco_id_lambda > 0:
+			raise ValueError('Both ID and MoCo loss have lambdas > 0! Please select only one to have non-zero lambda!')
 		self.mse_loss = nn.MSELoss().to(self.device).eval()
 		if self.opts.lpips_lambda > 0:
 			self.lpips_loss = LPIPS(net_type='alex').to(self.device).eval()
@@ -46,7 +52,9 @@ class Coach:
 			self.w_norm_loss = w_norm.WNormLoss(opts=self.opts)
 		if self.opts.aging_lambda > 0:
 			self.aging_loss = AgingLoss(self.opts)
-		self.clip_loss = CLIPLoss(self.clip_model)
+		if self.opts.moco_id_lambda > 0:
+			self.moco_loss = moco_loss.MocoLoss().to(self.device).eval()
+		# self.clip_loss = CLIPLoss(self.clip_model)
 		self.directional_loss = DirectionalCLIPLoss(self.clip_model)
 
 		# Initialize optimizer
@@ -242,23 +250,25 @@ class Coach:
 		print(f'Loading dataset for {self.opts.dataset_type}')
 		dataset_args = data_configs.DATASETS[self.opts.dataset_type]
 		transforms_dict = dataset_args['transforms'](self.opts).get_transforms()
-		train_dataset = ImagesTextDataset(source_root=dataset_args['train_source_root'],
-									  target_root=dataset_args['train_target_root'],
-									  source_transform=transforms_dict['transform_source'],
-									  target_transform=transforms_dict['transform_gt_train'],
-									  opts=self.opts, train=True)
-		test_dataset = ImagesTextDataset(source_root=dataset_args['test_source_root'],
-									 target_root=dataset_args['test_target_root'],
-									 source_transform=transforms_dict['transform_source'],
-									 target_transform=transforms_dict['transform_test'],
-									 opts=self.opts, train=False)
+		train_dataset = LMDBDataset(source_root=dataset_args['train_source_root'], resolution = self.opts.train_size, filenames=self.opts.train_filenames_path, imgfolder=self.opts.images_folder_path, textfolder=self.opts.text_folder_path, transform = transforms_dict['transform_gt_train'])
+		test_dataset = LMDBDataset(source_root=dataset_args['test_source_root'], resolution = self.opts.test_size, filenames=self.opts.test_filenames_path, imgfolder=self.opts.images_folder_path, textfolder=self.opts.text_folder_path, transform = transforms_dict['transform_test'])
+		# train_dataset = ImagesTextDataset(source_root=dataset_args['train_source_root'],
+		# 							  target_root=dataset_args['train_target_root'],
+		# 							  source_transform=transforms_dict['transform_source'],
+		# 							  target_transform=transforms_dict['transform_gt_train'],
+		# 							  opts=self.opts, train=True)
+		# test_dataset = ImagesTextDataset(source_root=dataset_args['test_source_root'],
+		# 							 target_root=dataset_args['test_target_root'],
+		# 							 source_transform=transforms_dict['transform_source'],
+		# 							 target_transform=transforms_dict['transform_test'],
+		# 							 opts=self.opts, train=False)
 		print(f"Number of training samples: {len(train_dataset)}")
 		print(f"Number of test samples: {len(test_dataset)}")
 		return train_dataset, test_dataset
 
 	def calc_loss(self, x, y, y_hat, source_text, target_text, latent, directional_source, mismatch_text, data_type="real"):
 		loss_dict = {}
-		id_logs = []
+		id_logs = None
 		loss = 0.0
 		if self.opts.id_lambda > 0:
 			weights = None
@@ -304,7 +314,12 @@ class Coach:
 		if mismatch_text: 
 			loss_directional = self.directional_loss(directional_source, y_hat, source_text, target_text).mean()
 			loss_dict[f'loss_directional_{data_type}'] = float(loss_directional)
-			loss += loss_directional * 1.0
+			loss += loss_directional * self.opts.clip_lambda
+		if self.opts.moco_id_lambda > 0:
+			loss_moco, sim_improvement, id_logs = self.moco_loss(y_hat, y, x)
+			loss_dict['loss_moco'] = float(loss_moco)
+			loss_dict['id_improve'] = float(sim_improvement)
+			loss += loss_moco * self.opts.moco_id_lambda
    
 		loss_dict[f'loss_{data_type}'] = float(loss)
 		if data_type == "cycle":
@@ -330,6 +345,7 @@ class Coach:
 				'recovered_face': common.tensor2im(y_recovered[i])
 			}
 			if id_logs is not None:
+				#print(id_logs)
 				for key in id_logs[i]:
 					cur_im_data[key] = id_logs[i][key]
 			im_data.append(cur_im_data)

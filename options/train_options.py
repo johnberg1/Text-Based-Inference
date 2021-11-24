@@ -1,5 +1,6 @@
 from argparse import ArgumentParser
 from configs.paths_config import model_paths
+from configs.paths_config import dataset_paths
 
 
 class TrainOptions:
@@ -17,10 +18,12 @@ class TrainOptions:
                                  help='Number of input image channels to the psp encoder')
         self.parser.add_argument('--label_nc', default=0, type=int,
                                  help='Number of input label channels to the psp encoder')
-        self.parser.add_argument('--output_size', default=1024, type=int,
+        self.parser.add_argument('--output_size', default=256, type=int,
                                  help='Output size of generator')
+        self.parser.add_argument('--train_size', default=304, type=int, help='Output size of generator')
+        self.parser.add_argument('--test_size', default=256, type=int, help='Output size of generator')
 
-        self.parser.add_argument('--batch_size', default=4, type=int,
+        self.parser.add_argument('--batch_size', default=8, type=int,
                                  help='Batch size for training')
         self.parser.add_argument('--test_batch_size', default=2, type=int,
                                  help='Batch size for testing and inference')
@@ -44,6 +47,8 @@ class TrainOptions:
                                  help='LPIPS loss multiplier factor')
         self.parser.add_argument('--id_lambda', default=0, type=float,
                                  help='ID loss multiplier factor')
+        self.parser.add_argument('--moco_id_lambda', default=0, type=float,
+                                 help='ID loss multiplier factor')
         self.parser.add_argument('--l2_lambda', default=0, type=float,
                                  help='L2 loss multiplier factor')
         self.parser.add_argument('--w_norm_lambda', default=0, type=float,
@@ -52,6 +57,7 @@ class TrainOptions:
                                  help='Aging loss multiplier factor')
         self.parser.add_argument('--cycle_lambda', default=0, type=float,
                                  help='Cycle loss multiplier factor')
+        self.parser.add_argument('--clip_lambda', default=0, type=float, help='Moco-based feature similarity loss multiplier factor')
 
         self.parser.add_argument('--lpips_lambda_crop', default=0, type=float,
                                  help='LPIPS loss multiplier factor for inner image region')
@@ -63,10 +69,14 @@ class TrainOptions:
         self.parser.add_argument('--l2_lambda_aging', default=0, type=float,
                                  help='L2 loss multiplier factor for aging')
 
-        self.parser.add_argument('--stylegan_weights', default=model_paths['stylegan_ffhq'], type=str,
+        self.parser.add_argument('--stylegan_weights', default=model_paths['stylegan_cub'], type=str,
                                  help='Path to StyleGAN model weights')
         self.parser.add_argument('--checkpoint_path', default=None, type=str,
                                  help='Path to pSp model checkpoint')
+        self.parser.add_argument('--images_folder_path', default=dataset_paths['cub_images_folder'], type=str, help='Path to source folder with CUB dataset images')
+        self.parser.add_argument('--text_folder_path', default=dataset_paths['cub_text_folder'], type=str, help='Path to source folder with CUB dataset images')
+        self.parser.add_argument('--train_filenames_path', default=dataset_paths['cub_train_names'], type=str, help='Path to pickle file containing train filenames for CUB dataset')
+        self.parser.add_argument('--test_filenames_path', default=dataset_paths['cub_test_names'], type=str, help='Path to pickle file ocntaining test filenames for CUB dataset')
 
         self.parser.add_argument('--max_steps', default=500000, type=int,
                                  help='Maximum number of training steps')
@@ -84,7 +94,7 @@ class TrainOptions:
                                  help='Target age for training. Use `uniform_random` for random sampling of target age')
         self.parser.add_argument('--use_weighted_id_loss', action="store_true",
                                  help="Whether to weight id loss based on change in age (more change -> less weight)")
-        self.parser.add_argument('--pretrained_psp_path', default=model_paths['pretrained_psp_encoder'], type=str,
+        self.parser.add_argument('--pretrained_psp_path', default=model_paths['psp_cub'], type=str,
                                  help="Path to pretrained pSp network.")
 
     def parse(self):

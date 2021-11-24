@@ -10,6 +10,13 @@ DATASETS = {
     'test_source_root': dataset_paths['celeba_test'],
     'test_target_root': dataset_paths['celeba_test'],
   },
+  'cub_encode': {
+		'transforms': transforms_config.EncodeTransforms,
+		'train_source_root': dataset_paths['cub_train'],
+		'train_target_root': dataset_paths['cub_train'],
+		'test_source_root': dataset_paths['cub_test'],
+		'test_target_root': dataset_paths['cub_test'],
+	},
 	'ffhq_aging': {
 		'transforms': transforms_config.AgingTransforms,
 		'train_source_root': dataset_paths['ffhq'],
@@ -17,11 +24,11 @@ DATASETS = {
 		'test_source_root': dataset_paths['celeba_test'],
 		'test_target_root': dataset_paths['celeba_test'],
 	},
-	'overfit': {
-		'transforms': transforms_config.OverfitTransforms,
-		'train_source_root': dataset_paths['overfit'],
-		'train_target_root': dataset_paths['overfit_target'],
-		'test_source_root': dataset_paths['overfit'],
-		'test_target_root': dataset_paths['overfit_target'],
-	}
+	# 'overfit': {
+	# 	'transforms': transforms_config.OverfitTransforms,
+	# 	'train_source_root': dataset_paths['overfit'],
+	# 	'train_target_root': dataset_paths['overfit_target'],
+	# 	'test_source_root': dataset_paths['overfit'],
+	# 	'test_target_root': dataset_paths['overfit_target'],
+	# }
 }

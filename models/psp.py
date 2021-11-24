@@ -52,7 +52,9 @@ class pSp(nn.Module):
 			self.encoder.load_state_dict(encoder_ckpt, strict=False)
 			print(f'Loading decoder weights from pretrained path: {self.opts.stylegan_weights}')
 			ckpt = torch.load(self.opts.stylegan_weights)
+			print(ckpt.keys())
 			self.decoder.load_state_dict(ckpt['g_ema'], strict=True)
+			#print(ckpt.keys())
 			self.__load_latent_avg(ckpt, repeat=self.n_styles)
 			if self.opts.start_from_encoded_w_plus:
 				self.pretrained_encoder = self.__load_pretrained_psp_encoder()

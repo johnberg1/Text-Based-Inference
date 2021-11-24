@@ -55,15 +55,16 @@ def vis_faces_two(log_hooks, txt, mismatch_text):
 
 def vis_faces_with_age(hooks_dict, fig, gs, i):
 	fig.add_subplot(gs[i, 0])
+	#print(hooks_dict.keys())
 	plt.imshow(hooks_dict['input_face'])
-	plt.title('Input\nOut Sim={:.2f}\n'.format(float(hooks_dict['diff_input_real'])))
+	plt.title('Input\nOut Sim={:.2f}\n'.format(float(hooks_dict['diff_input'])))
 	fig.add_subplot(gs[i, 1])
 	plt.imshow(hooks_dict['target_face'])
-	plt.title('Target\nIn={:.2f},Out={:.2f}\n'.format(float(hooks_dict['diff_views_real']),
-	                                                                   float(hooks_dict['diff_target_real'])))
+	plt.title('Target\nIn={:.2f},Out={:.2f}\n'.format(float(hooks_dict['diff_views']),
+	                                                                   float(hooks_dict['diff_target'])))
 	fig.add_subplot(gs[i, 2])
 	plt.imshow(hooks_dict['output_face'])
-	plt.title('Output\nTarget Sim={:.2f}\n'.format(float(hooks_dict['diff_target_real'])))
+	plt.title('Output\nTarget Sim={:.2f}\n'.format(float(hooks_dict['diff_target'])))
 	fig.add_subplot(gs[i, 3])
 	plt.imshow(hooks_dict['recovered_face'])
-	plt.title('Recovered\nTarget Sim={:.2f}\n'.format(float(hooks_dict['diff_target_real'])))
+	plt.title('Recovered\nTarget Sim={:.2f}\n'.format(float(hooks_dict['diff_target'])))
