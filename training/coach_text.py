@@ -100,6 +100,13 @@ class Coach:
 			for batch_idx, batch in enumerate(self.train_dataloader):
 				x, y, txt = batch
 				x, y = x.to(self.device).float(), y.to(self.device).float()
+				try:
+					clip.tokenize(txt)
+				except:
+					txt = [" ".join(text.split()[:77]) for text in txt]
+					print('Warning: Batch Skipped due to a text')
+					print(txt)
+					continue
 				text_original = clip.tokenize(txt).to(self.device)
 				with torch.no_grad():
 					txt_embed_original = self.clip_model.encode_text(text_original)
@@ -172,6 +179,14 @@ class Coach:
 		for batch_idx, batch in enumerate(self.test_dataloader):
 			x, y, txt = batch
 			text_original = clip.tokenize(txt).to(self.device)
+			try:
+				clip.tokenize(txt)
+			except:
+				txt = [" ".join(text.split()[:77]) for text in txt]
+				print('Warning: Batch Skipped due to a text')
+				print(txt)
+				continue
+
 			with torch.no_grad():
 				txt_embed_original = self.clip_model.encode_text(text_original)
 				txt_embed_original = txt_embed_original.to(self.device).float()
