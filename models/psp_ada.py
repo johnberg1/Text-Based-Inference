@@ -11,8 +11,8 @@ import math
 from configs.paths_config import model_paths
 from models.encoders import psp_encoders
 from models.encoders import psp_encoders_adain
-from models.stylegan2.model_ada4_all import Generator
-
+from models.stylegan2.model_ada4_all import Generator, Discriminator
+from models.stylegan2.model import Generator as Generator2
 
 class pSp(nn.Module):
 
@@ -23,6 +23,8 @@ class pSp(nn.Module):
 		# Define architecture
 		self.encoder = self.set_encoder()
 		self.decoder = Generator(self.opts.output_size, 512, 8)
+		self.decoder_fixed = Generator2(self.opts.output_size, 512, 8)
+		self.discriminator = Discriminator(self.opts.output_size)
 		self.face_pool = torch.nn.AdaptiveAvgPool2d((256, 256))
 		# Load weights if needed
 		self.load_weights()
@@ -36,6 +38,11 @@ class pSp(nn.Module):
 			ckpt = torch.load(self.opts.checkpoint_path, map_location='cpu')
 			self.encoder.load_state_dict(self.__get_keys(ckpt, 'encoder'), strict=False)
 			self.decoder.load_state_dict(self.__get_keys(ckpt, 'decoder'), strict=False) # CHANGED
+			self.decoder_fixed.load_state_dict(self.__get_keys(ckpt, 'decoder'), strict=True) # CHANGED
+			ckpt_d = torch.load(self.opts.stylegan_weights)
+			self.discriminator.load_state_dict(ckpt_d['d'], strict=True)
+			for param in self.decoder_fixed.parameters():
+				param.requires_grad = False
 			if self.opts.start_from_encoded_w_plus:
 				self.pretrained_encoder = self.__get_pretrained_psp_encoder()
 				self.pretrained_encoder.load_state_dict(self.__get_keys(ckpt, 'pretrained_encoder'), strict=True)
@@ -90,14 +97,21 @@ class pSp(nn.Module):
 											 randomize_noise=randomize_noise,
 											 return_latents=return_latents,
                        txt_embed=txt_embed)
+        
+		fake_pred = self.discriminator(images)
+		images_fixed, _ = self.decoder_fixed([codes],
+											 input_is_latent=input_is_latent,
+											 randomize_noise=randomize_noise,
+											 return_latents=return_latents)
 
 		if resize:
 			images = self.face_pool(images)
+			images_fixed = self.face_pool(images_fixed)
 
 		if return_latents:
-			return images, result_latent
+			return images, result_latent, images_fixed, fake_pred
 		else:
-			return images
+			return images, images_fixed, fake_pred
 
 	def set_opts(self, opts):
 		self.opts = opts
