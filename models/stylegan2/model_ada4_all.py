@@ -15,17 +15,62 @@ def init_weights(m):
     if isinstance(m, nn.Conv2d):
         nn.init.normal_(m.weight.data, std=1e-3)
         
+# class AdaIN(nn.Module):
+#     def __init__(self, in_channel, style_dim, spatial):
+#         super().__init__()
+#         self.in1 = nn.InstanceNorm2d(in_channel)
+#         self.in2 = nn.InstanceNorm2d(in_channel)
+#         self.in3 = nn.InstanceNorm2d(in_channel)
+#         self.in4 = nn.InstanceNorm2d(in_channel)
+#         self.lrelu = nn.LeakyReLU(0.2)
+#         self.style_mapper = nn.Sequential(nn.Linear(style_dim, style_dim), nn.ReLU(), nn.Linear(style_dim, style_dim), nn.ReLU(), nn.Linear(style_dim, style_dim), nn.ReLU())
+#         self.style_out = nn.Linear(style_dim, in_channel * 2)
+#         self.conv1 = nn.Conv2d(in_channel, in_channel, kernel_size=1, padding=0)      
+#         self.conv2 = nn.Conv2d(in_channel, in_channel, kernel_size=3, padding=1)
+#         self.conv3 = nn.Conv2d(in_channel, in_channel, kernel_size=3, padding=1)      
+#         self.conv4 = nn.Conv2d(in_channel, in_channel, kernel_size=1, padding=0)
 
+        
+#     def forward(self, input, style):
+#         out = input
+        
+#         style = self.style_mapper(style)
+#         style = self.style_out(style).unsqueeze(2).unsqueeze(3)
+#         gamma_log, beta = style.chunk(2, 1)
+#         gamma = gamma_log.exp()
+        
+#         out = self.in1(out)
+#         out = gamma * out + beta
+#         out = self.lrelu(out)
+#         out = self.conv1(out)
+#         out = self.in2(out)
+#         out = gamma * out + beta
+#         out = self.lrelu(out)
+#         out = self.conv2(out)
+#         out = self.in3(out)
+#         out = gamma * out + beta
+#         out = self.lrelu(out)
+#         out = self.conv3(out)
+#         out = self.in4(out)
+#         out = gamma * out + beta
+#         out = self.lrelu(out)
+#         out = self.conv4(out)
+        
+#         out_norm = out.norm(p=2, dim=(1,2,3)).mean()
+#         in_norm = input.norm(p=2, dim=(1,2,3)).mean()
+#         norm_ratio = float(in_norm / out_norm)
+        
+#         out = out + input
+#         return out, norm_ratio
+    
 class AdaIN(nn.Module):
     def __init__(self, in_channel, style_dim, spatial):
         super().__init__()
         self.norm = nn.InstanceNorm2d(in_channel)
         self.style_mapper = nn.Sequential(nn.Linear(style_dim, style_dim), nn.ReLU(), nn.Linear(style_dim, style_dim), nn.ReLU(), nn.Linear(style_dim, style_dim), nn.ReLU())
         self.style_out = nn.Linear(style_dim, in_channel * 2)
-        # self.conv1 = EqualConv2d(in_channel, in_channel, kernel_size=3, padding=1)
         self.conv1 = nn.Conv2d(in_channel, in_channel, kernel_size=3, padding=1)
         self.lrelu1 = nn.LeakyReLU(0.2)
-        # self.conv2 = EqualConv2d(in_channel, in_channel, kernel_size=3, padding=1)
         self.conv2 = nn.Conv2d(in_channel, in_channel, kernel_size=3, padding=1)
         self.lrelu2 = nn.LeakyReLU(0.2)
         
@@ -43,8 +88,15 @@ class AdaIN(nn.Module):
         out = self.lrelu1(out)
         out = self.conv2(out)
         out = self.lrelu2(out)
+
+        demod = torch.rsqrt(out.pow(2).sum([2, 3]) + 1e-8)
+        out = out * demod.view(out.shape[0], out.shape[1], 1, 1)
+        out_norm = out.norm(p=2, dim=(1,2,3)).mean()
+        in_norm = input.norm(p=2, dim=(1,2,3)).mean()
+        norm_ratio = float(in_norm / out_norm)
+        
         out = out + input
-        return out
+        return out, norm_ratio
 
 class PixelNorm(nn.Module):
     def __init__(self):
@@ -451,15 +503,7 @@ class Generator(nn.Module):
         self.to_rgbs = nn.ModuleList()
         self.noises = nn.Module()
 
-        in_channel = self.channels[4]     
-            
-        ## AdaIN Layers
-        # self.adain1 = AdaIN(in_channel = 512, style_dim = 512, spatial = 16)
-        # self.adain2 = AdaIN(in_channel = 256, style_dim = 512, spatial = 128)
-        # self.adain3 = AdaIN(in_channel = 128, style_dim = 512, spatial = 256)
-        # self.adain1.apply(init_weights)
-        # self.adain2.apply(init_weights)
-        # self.adain3.apply(init_weights)        
+        in_channel = self.channels[4]       
 
         for layer_idx in range(self.num_layers):
             res = (layer_idx + 5) // 2
@@ -493,13 +537,14 @@ class Generator(nn.Module):
         self.n_latent = self.log_size * 2 - 2
         
         self.adains = nn.ModuleList()
-        for i in range(9):
+        # for i in range(9):
+        for i in range(0,9):
             if i <= 4:
                 in_channel = 512
             else:
                 in_channel = 512 // (2**(i-4))
             self.adains.append(AdaIN(in_channel = in_channel, style_dim = 512, spatial = 2**(i+2)))
-            self.adains[i].apply(init_weights)
+            # self.adains[i].apply(init_weights)
 
     def make_noise(self):
         device = self.input.input.device
@@ -581,19 +626,27 @@ class Generator(nn.Module):
         #print("After first conv", out.shape)
 
         skip = self.to_rgb1(out, latent[:, 1])
-        out_norms = 0.0
+        norm_ratios = []
 
         i = 1
         for adain, conv1, conv2, noise1, noise2, to_rgb in zip(
                 self.adains, self.convs[::2], self.convs[1::2], noise[1::2], noise[2::2], self.to_rgbs
         ):  
-            # if i == 5:
-              # out = self.adain1(out, txt_embed)
-            #if i == 11:
-            #  out = self.adain2(out, txt_embed)
-            #if i == 13:
-            #  out = self.adain3(out, txt_embed)
-            out = adain(out, txt_embed)
+
+            # if i == 11:
+            #     out, norm_ratio = self.adains[0](out, txt_embed)
+            #     norm_ratios.append(norm_ratio)
+            # if i == 13:
+            #     out, norm_ratio = self.adains[1](out, txt_embed)
+            #     norm_ratios.append(norm_ratio)
+            # if i == 15:
+            #     out, norm_ratio = self.adains[2](out, txt_embed)
+            #     norm_ratios.append(norm_ratio)
+            # if i == 17:
+            #     out, norm_ratio = self.adains[3](out, txt_embed)
+            #     norm_ratios.append(norm_ratio)
+            out, norm_ratio = adain(out, txt_embed)
+            
             out = conv1(out, latent[:, i], noise=noise1)
             #print("{}".format(i), out.shape)
             out = conv2(out, latent[:, i + 1], noise=noise2)
@@ -605,11 +658,11 @@ class Generator(nn.Module):
         # sys.exit("over")
 
         if return_latents:
-            return image, latent
+            return image, latent, norm_ratios
         elif return_features:
-            return image, out
+            return image, out, norm_ratios
         else:
-            return image, None
+            return image, None, norm_ratios
 
 
 class ConvLayer(nn.Sequential):

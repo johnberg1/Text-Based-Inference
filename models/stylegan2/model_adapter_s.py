@@ -2,66 +2,31 @@ import math
 import random
 import torch
 from torch import nn
-from torch.nn import functional as F
 import sys
+from torch.nn import functional as F
 
 from models.stylegan2.op import FusedLeakyReLU, fused_leaky_relu, upfirdn2d
-  
+
 def init_weights(m):
-    # if isinstance(m, nn.Linear):
-        # nn.init.normal_(m.weight.data, std=1e-5)
-        # m.bias.data.fill_(0.0)
-    # elif isinstance(m, nn.Conv2d):
-    if isinstance(m, nn.Conv2d):
-        nn.init.normal_(m.weight.data, std=1e-5)
+    if isinstance(m, nn.Linear):
+        nn.init.normal_(m.weight.data, std=1e-3)
+        m.bias.data.fill_(0.0)
         
-class AdaIN(nn.Module):
-    def __init__(self, in_channel, out_channel):
+class Adapter(nn.Module):
+    def __init__(self, num_channel, style_dim = 512):
         super().__init__()
-        self.in_channel = in_channel
-        self.out_channel = out_channel
-        self.style_dim = 512
-        self.kernel_size = 3
-        self.demodulate = True
-        self.conv = ModulatedConv2d(self.in_channel, self.out_channel, self.kernel_size, style_dim = self.style_dim, demodulate = self.demodulate)
+        self.style_mapper = nn.Sequential(nn.Linear(style_dim, style_dim), 
+                                          nn.ReLU(), 
+                                          nn.Linear(style_dim, style_dim), 
+                                          nn.ReLU(), 
+                                          nn.Linear(style_dim, style_dim), 
+                                          nn.ReLU(), 
+                                          nn.Linear(style_dim, num_channel))
         
-    def forward(self, input, style):
-        skip = input
-        out = self.conv(input, style)
-        skip = skip + out
-        return skip
-
-# class AdaIN(nn.Module):
-#     def __init__(self, in_channel, style_dim, spatial):
-#         super().__init__()
-#         self.norm = nn.InstanceNorm2d(in_channel)
-#         self.style_mapper = nn.Sequential(nn.Linear(style_dim, style_dim), nn.ReLU(), nn.Linear(style_dim, style_dim), nn.ReLU(), nn.Linear(style_dim, style_dim), nn.ReLU())
-#         self.style_out = nn.Linear(style_dim, in_channel * 2)
-#         # self.conv1 = EqualConv2d(in_channel, in_channel, kernel_size=3, padding=1)
-#         self.conv1 = nn.Conv2d(in_channel, in_channel, kernel_size=3, padding=1)
-#         self.lrelu1 = nn.LeakyReLU(0.2)
-#         # self.conv2 = EqualConv2d(in_channel, in_channel, kernel_size=3, padding=1)
-#         self.conv2 = nn.Conv2d(in_channel, in_channel, kernel_size=3, padding=1)
-#         self.lrelu2 = nn.LeakyReLU(0.2)
-        
-#     def forward(self, input, style):
-#         out = input
-        
-#         style = self.style_mapper(style)
-#         style = self.style_out(style).unsqueeze(2).unsqueeze(3)
-#         gamma_log, beta = style.chunk(2, 1)
-#         gamma = gamma_log.exp()
-        
-#         out = self.norm(out)
-#         out = gamma * out + beta
-#         out = self.conv1(out)
-#         out = self.lrelu1(out)
-#         out = self.conv2(out)
-#         out = self.lrelu2(out)
-#         out = out + input
-#         out_norm = F.mse_loss(out,input)
-#         return out, out_norm
-
+    def forward(self, txt_embed):
+        delta_s = self.style_mapper(txt_embed)
+        return delta_s
+    
 class PixelNorm(nn.Module):
     def __init__(self):
         super().__init__()
@@ -271,10 +236,12 @@ class ModulatedConv2d(nn.Module):
         self.padding = kernel_size // 2
 
         self.weight = nn.Parameter(
-            torch.randn(1, out_channel, in_channel, kernel_size, kernel_size) * 1e-3
+            torch.randn(1, out_channel, in_channel, kernel_size, kernel_size)
         )
 
         self.modulation = EqualLinear(style_dim, in_channel, bias_init=1)
+        self.adapter = Adapter(num_channel = in_channel, style_dim = 512)
+        self.adapter.apply(init_weights)
 
         self.demodulate = demodulate
 
@@ -284,10 +251,13 @@ class ModulatedConv2d(nn.Module):
             f'upsample={self.upsample}, downsample={self.downsample})'
         )
 
-    def forward(self, input, style):
+    def forward(self, input, style, txt_embed=None):
         batch, in_channel, height, width = input.shape
 
         style = self.modulation(style).view(batch, 1, in_channel, 1, 1)
+        if txt_embed is not None:
+            delta_style = self.adapter(txt_embed).view(batch, 1, in_channel, 1, 1)
+            style = style + delta_style
         weight = self.scale * self.weight * style
 
         if self.demodulate:
@@ -383,8 +353,8 @@ class StyledConv(nn.Module):
         # self.activate = ScaledLeakyReLU(0.2)
         self.activate = FusedLeakyReLU(out_channel)
 
-    def forward(self, input, style, noise=None):
-        out = self.conv(input, style)
+    def forward(self, input, style, noise=None, txt_embed=None):
+        out = self.conv(input, style, txt_embed)
         out = self.noise(out, noise=noise)
         # out = out + self.bias
         out = self.activate(out)
@@ -402,8 +372,8 @@ class ToRGB(nn.Module):
         self.conv = ModulatedConv2d(in_channel, 3, 1, style_dim, demodulate=False)
         self.bias = nn.Parameter(torch.zeros(1, 3, 1, 1))
 
-    def forward(self, input, style, skip=None):
-        out = self.conv(input, style)
+    def forward(self, input, style, skip=None, txt_embed=None):
+        out = self.conv(input, style, txt_embed)
         out = out + self.bias
 
         if skip is not None:
@@ -458,7 +428,6 @@ class Generator(nn.Module):
             self.channels[4], self.channels[4], 3, style_dim, blur_kernel=blur_kernel
         )
         self.to_rgb1 = ToRGB(self.channels[4], style_dim, upsample=False)
-        self.adain1 = AdaIN(self.channels[4], self.channels[4])
 
         self.log_size = int(math.log(size, 2))
         self.num_layers = (self.log_size - 2) * 2 + 1
@@ -466,11 +435,9 @@ class Generator(nn.Module):
         self.convs = nn.ModuleList()
         self.upsamples = nn.ModuleList()
         self.to_rgbs = nn.ModuleList()
-        self.noises = nn.Module()        
-        self.adains = nn.ModuleList()
-        
-        in_channel = self.channels[4]     
-                 
+        self.noises = nn.Module()
+
+        in_channel = self.channels[4]
 
         for layer_idx in range(self.num_layers):
             res = (layer_idx + 5) // 2
@@ -498,18 +465,10 @@ class Generator(nn.Module):
             )
 
             self.to_rgbs.append(ToRGB(out_channel, style_dim))
-            # self.adains.append(AdaIN(out_channel, out_channel))
-            # self.adains[i-3].apply(init_weights)
 
             in_channel = out_channel
 
         self.n_latent = self.log_size * 2 - 2
-        
-        # self.adains = nn.ModuleList()
-        for i in range(3, self.log_size + 1):
-            out_channel = self.channels[2 ** (i-1)]            
-            self.adains.append(AdaIN(out_channel, out_channel))
-            self.adains[i-3].apply(init_weights)
 
     def make_noise(self):
         device = self.input.input.device
@@ -583,37 +542,23 @@ class Generator(nn.Module):
             latent2 = styles[1].unsqueeze(1).repeat(1, self.n_latent - inject_index, 1)
 
             latent = torch.cat([latent, latent2], 1)
-        
-        
-        out = self.input(latent)
-        #print("After input layer",out.shape)
-        out = self.conv1(out, latent[:, 0], noise=noise[0])
-        #print("After first conv", out.shape)
-        # out = self.adain1(out, txt_embed)
 
-        skip = self.to_rgb1(out, latent[:, 1])
+        out = self.input(latent)
+        out = self.conv1(out, latent[:, 0], noise=noise[0], txt_embed=txt_embed)
+
+        skip = self.to_rgb1(out, latent[:, 1], txt_embed=txt_embed)
 
         i = 1
-        for adain, conv1, conv2, noise1, noise2, to_rgb in zip(
-                self.adains, self.convs[::2], self.convs[1::2], noise[1::2], noise[2::2], self.to_rgbs
-        ):  
-            # if i == 5:
-              # out = self.adain1(out, txt_embed)
-            #if i == 11:
-            #  out = self.adain2(out, txt_embed)
-            #if i == 13:
-            #  out = self.adain3(out, txt_embed)
-            if i == 17 or i == 15:
-                out = adain(out, txt_embed)
-            out = conv1(out, latent[:, i], noise=noise1)
-            #print("{}".format(i), out.shape)
-            out = conv2(out, latent[:, i + 1], noise=noise2)
-            #print("{}".format(i+1), out.shape)
-            skip = to_rgb(out, latent[:, i + 2], skip)
+        for conv1, conv2, noise1, noise2, to_rgb in zip(
+                self.convs[::2], self.convs[1::2], noise[1::2], noise[2::2], self.to_rgbs
+        ):
+            out = conv1(out, latent[:, i], noise=noise1, txt_embed=txt_embed)
+            out = conv2(out, latent[:, i + 1], noise=noise2, txt_embed=txt_embed)
+            skip = to_rgb(out, latent[:, i + 2], skip, txt_embed=txt_embed)
 
             i += 2
+
         image = skip
-        # sys.exit("over")
 
         if return_latents:
             return image, latent

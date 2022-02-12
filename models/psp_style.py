@@ -7,13 +7,11 @@ from argparse import Namespace
 import torch
 from torch import nn
 import math
-import numpy as np
 
 from configs.paths_config import model_paths
 from models.encoders import psp_encoders
 from models.encoders import psp_encoders_adain
-from models.stylegan2.model_ada_disc import Generator, Discriminator, EqualLinear
-from models.stylegan2.model_ada_swagan_text import SwaDiscriminator
+from models.stylegan2.model_adapter_s import Generator, Discriminator
 from models.stylegan2.model import Generator as Generator2
 
 class pSp(nn.Module):
@@ -26,8 +24,7 @@ class pSp(nn.Module):
 		self.encoder = self.set_encoder()
 		self.decoder = Generator(self.opts.output_size, 512, 8)
 		self.decoder_fixed = Generator2(self.opts.output_size, 512, 8)
-		self.discriminator = Discriminator(self.opts.output_size)
-		self.swa_discriminator = SwaDiscriminator(self.opts.output_size)
+		# self.discriminator = Discriminator(self.opts.output_size)
 		self.face_pool = torch.nn.AdaptiveAvgPool2d((256, 256))
 		# Load weights if needed
 		self.load_weights()
@@ -41,13 +38,9 @@ class pSp(nn.Module):
 			ckpt = torch.load(self.opts.checkpoint_path, map_location='cpu')
 			self.encoder.load_state_dict(self.__get_keys(ckpt, 'encoder'), strict=False)
 			self.decoder.load_state_dict(self.__get_keys(ckpt, 'decoder'), strict=False) # CHANGED
-			self.decoder_fixed.load_state_dict(self.__get_keys(ckpt, 'decoder'), strict=False) # CHANGED
-			ckpt_d = torch.load(self.opts.stylegan_weights)
-			self.discriminator.load_state_dict(ckpt_d['d'], strict=True)
-			# self.discriminator.final_linear = nn.Sequential(
-			# EqualLinear(512 * 4 * 4, 512, activation='fused_lrelu'),
-			# EqualLinear(512, 1),
-			# )
+			self.decoder_fixed.load_state_dict(self.__get_keys(ckpt, 'decoder'), strict=True) # CHANGED
+			# ckpt_d = torch.load(self.opts.stylegan_weights)
+			# self.discriminator.load_state_dict(ckpt_d['d'], strict=False)
 			for param in self.decoder_fixed.parameters():
 				param.requires_grad = False
 			if self.opts.start_from_encoded_w_plus:
@@ -99,14 +92,13 @@ class pSp(nn.Module):
 					codes[:, i] = 0
 
 		input_is_latent = (not input_code) or (input_is_full)
-		# norm_ratios = None
-		images, result_latent, norm_ratios = self.decoder([codes],
+		images, result_latent = self.decoder([codes],
 											 input_is_latent=input_is_latent,
 											 randomize_noise=randomize_noise,
-											 return_latents=return_latents, txt_embed=txt_embed)
+											 return_latents=return_latents,
+                                             txt_embed=txt_embed)
         
-		fake_pred = self.discriminator(images, txt_embed)
-		fake_pred_patch = self.swa_discriminator(images, txt_embed)
+		# fake_pred = self.discriminator(images, txt_embed)
 		images_fixed, _ = self.decoder_fixed([codes],
 											 input_is_latent=input_is_latent,
 											 randomize_noise=randomize_noise,
@@ -117,9 +109,9 @@ class pSp(nn.Module):
 			images_fixed = self.face_pool(images_fixed)
 
 		if return_latents:
-			return images, result_latent, images_fixed, fake_pred, norm_ratios, fake_pred_patch
+			return images, result_latent, images_fixed
 		else:
-			return images, images_fixed, fake_pred, norm_ratios, fake_pred_patch
+			return images, images_fixed
 
 	def set_opts(self, opts):
 		self.opts = opts

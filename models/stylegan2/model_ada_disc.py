@@ -13,54 +13,42 @@ def init_weights(m):
         # m.bias.data.fill_(0.0)
     # elif isinstance(m, nn.Conv2d):
     if isinstance(m, nn.Conv2d):
-        nn.init.normal_(m.weight.data, std=1e-5)
-        
+        nn.init.normal_(m.weight.data, std=1e-3)
+    
 class AdaIN(nn.Module):
-    def __init__(self, in_channel, out_channel):
+    def __init__(self, in_channel, style_dim, spatial):
         super().__init__()
-        self.in_channel = in_channel
-        self.out_channel = out_channel
-        self.style_dim = 512
-        self.kernel_size = 3
-        self.demodulate = True
-        self.conv = ModulatedConv2d(self.in_channel, self.out_channel, self.kernel_size, style_dim = self.style_dim, demodulate = self.demodulate)
+        self.norm = nn.InstanceNorm2d(in_channel)
+        self.style_mapper = nn.Sequential(nn.Linear(style_dim, style_dim), nn.ReLU(), nn.Linear(style_dim, style_dim), nn.ReLU(), nn.Linear(style_dim, style_dim), nn.ReLU())
+        self.style_out = nn.Linear(style_dim, in_channel * 2)
+        self.conv1 = nn.Conv2d(in_channel, in_channel, kernel_size=3, padding=1)
+        self.lrelu1 = nn.LeakyReLU(0.2)
+        self.conv2 = nn.Conv2d(in_channel, in_channel, kernel_size=3, padding=1)
+        self.lrelu2 = nn.LeakyReLU(0.2)
         
     def forward(self, input, style):
-        skip = input
-        out = self.conv(input, style)
-        skip = skip + out
-        return skip
+        out = input
+        
+        style = self.style_mapper(style)
+        style = self.style_out(style).unsqueeze(2).unsqueeze(3)
+        gamma_log, beta = style.chunk(2, 1)
+        gamma = gamma_log.exp()
+        
+        out = self.norm(out)
+        out = gamma * out + beta
+        out = self.conv1(out)
+        out = self.lrelu1(out)
+        out = self.conv2(out)
+        out = self.lrelu2(out)
 
-# class AdaIN(nn.Module):
-#     def __init__(self, in_channel, style_dim, spatial):
-#         super().__init__()
-#         self.norm = nn.InstanceNorm2d(in_channel)
-#         self.style_mapper = nn.Sequential(nn.Linear(style_dim, style_dim), nn.ReLU(), nn.Linear(style_dim, style_dim), nn.ReLU(), nn.Linear(style_dim, style_dim), nn.ReLU())
-#         self.style_out = nn.Linear(style_dim, in_channel * 2)
-#         # self.conv1 = EqualConv2d(in_channel, in_channel, kernel_size=3, padding=1)
-#         self.conv1 = nn.Conv2d(in_channel, in_channel, kernel_size=3, padding=1)
-#         self.lrelu1 = nn.LeakyReLU(0.2)
-#         # self.conv2 = EqualConv2d(in_channel, in_channel, kernel_size=3, padding=1)
-#         self.conv2 = nn.Conv2d(in_channel, in_channel, kernel_size=3, padding=1)
-#         self.lrelu2 = nn.LeakyReLU(0.2)
+        demod = torch.rsqrt(out.pow(2).sum([2, 3]) + 1e-8)
+        out = out * demod.view(out.shape[0], out.shape[1], 1, 1)
+        out_norm = out.norm(p=2, dim=(1,2,3)).mean()
+        in_norm = input.norm(p=2, dim=(1,2,3)).mean()
+        norm_ratio = float(in_norm / out_norm)
         
-#     def forward(self, input, style):
-#         out = input
-        
-#         style = self.style_mapper(style)
-#         style = self.style_out(style).unsqueeze(2).unsqueeze(3)
-#         gamma_log, beta = style.chunk(2, 1)
-#         gamma = gamma_log.exp()
-        
-#         out = self.norm(out)
-#         out = gamma * out + beta
-#         out = self.conv1(out)
-#         out = self.lrelu1(out)
-#         out = self.conv2(out)
-#         out = self.lrelu2(out)
-#         out = out + input
-#         out_norm = F.mse_loss(out,input)
-#         return out, out_norm
+        out = out + input
+        return out, norm_ratio
 
 class PixelNorm(nn.Module):
     def __init__(self):
@@ -271,7 +259,7 @@ class ModulatedConv2d(nn.Module):
         self.padding = kernel_size // 2
 
         self.weight = nn.Parameter(
-            torch.randn(1, out_channel, in_channel, kernel_size, kernel_size) * 1e-3
+            torch.randn(1, out_channel, in_channel, kernel_size, kernel_size)
         )
 
         self.modulation = EqualLinear(style_dim, in_channel, bias_init=1)
@@ -458,7 +446,6 @@ class Generator(nn.Module):
             self.channels[4], self.channels[4], 3, style_dim, blur_kernel=blur_kernel
         )
         self.to_rgb1 = ToRGB(self.channels[4], style_dim, upsample=False)
-        self.adain1 = AdaIN(self.channels[4], self.channels[4])
 
         self.log_size = int(math.log(size, 2))
         self.num_layers = (self.log_size - 2) * 2 + 1
@@ -466,11 +453,9 @@ class Generator(nn.Module):
         self.convs = nn.ModuleList()
         self.upsamples = nn.ModuleList()
         self.to_rgbs = nn.ModuleList()
-        self.noises = nn.Module()        
-        self.adains = nn.ModuleList()
-        
-        in_channel = self.channels[4]     
-                 
+        self.noises = nn.Module()
+
+        in_channel = self.channels[4]       
 
         for layer_idx in range(self.num_layers):
             res = (layer_idx + 5) // 2
@@ -498,18 +483,20 @@ class Generator(nn.Module):
             )
 
             self.to_rgbs.append(ToRGB(out_channel, style_dim))
-            # self.adains.append(AdaIN(out_channel, out_channel))
-            # self.adains[i-3].apply(init_weights)
 
             in_channel = out_channel
 
         self.n_latent = self.log_size * 2 - 2
         
-        # self.adains = nn.ModuleList()
-        for i in range(3, self.log_size + 1):
-            out_channel = self.channels[2 ** (i-1)]            
-            self.adains.append(AdaIN(out_channel, out_channel))
-            self.adains[i-3].apply(init_weights)
+        self.adains = nn.ModuleList()
+        # for i in range(9):
+        for i in range(0,9):
+            if i <= 4:
+                in_channel = 512
+            else:
+                in_channel = 512 // (2**(i-4))
+            self.adains.append(AdaIN(in_channel = in_channel, style_dim = 512, spatial = 2**(i+2)))
+            # self.adains[i-4].apply(init_weights)
 
     def make_noise(self):
         device = self.input.input.device
@@ -589,22 +576,17 @@ class Generator(nn.Module):
         #print("After input layer",out.shape)
         out = self.conv1(out, latent[:, 0], noise=noise[0])
         #print("After first conv", out.shape)
-        # out = self.adain1(out, txt_embed)
 
         skip = self.to_rgb1(out, latent[:, 1])
+        norm_ratios = []
 
         i = 1
         for adain, conv1, conv2, noise1, noise2, to_rgb in zip(
                 self.adains, self.convs[::2], self.convs[1::2], noise[1::2], noise[2::2], self.to_rgbs
         ):  
-            # if i == 5:
-              # out = self.adain1(out, txt_embed)
-            #if i == 11:
-            #  out = self.adain2(out, txt_embed)
-            #if i == 13:
-            #  out = self.adain3(out, txt_embed)
-            if i == 17 or i == 15:
-                out = adain(out, txt_embed)
+            if i >= 7:
+                out, norm_ratio = adain(out, txt_embed)
+            
             out = conv1(out, latent[:, i], noise=noise1)
             #print("{}".format(i), out.shape)
             out = conv2(out, latent[:, i + 1], noise=noise2)
@@ -616,11 +598,11 @@ class Generator(nn.Module):
         # sys.exit("over")
 
         if return_latents:
-            return image, latent
+            return image, latent, norm_ratios
         elif return_features:
-            return image, out
+            return image, out, norm_ratios
         else:
-            return image, None
+            return image, None, norm_ratios
 
 
 class ConvLayer(nn.Sequential):
@@ -733,7 +715,7 @@ class Discriminator(nn.Module):
             EqualLinear(channels[4], 1),
         )
 
-    def forward(self, input):
+    def forward(self, input, txt=None):
         out = self.convs(input)
 
         batch, channel, height, width = out.shape
@@ -747,6 +729,104 @@ class Discriminator(nn.Module):
         out = self.final_conv(out)
 
         out = out.view(batch, -1)
-        out = self.final_linear(out)
+        out = self.final_linear[0](out)
+        output = self.final_linear[1](out)
+        if txt is not None:
+            res = torch.sum(out * txt, dim=1, keepdims=True)
+            output = output + res
+        return output
+    
+class Patch_Discriminator(nn.Module):
+    def __init__(self, size, channel_multiplier=2, blur_kernel=[1, 3, 3, 1]):
+        super().__init__()
 
+        channels = {
+            4: 512,
+            8: 512,
+            16: 512,
+            32: 512,
+            64: 256 * channel_multiplier,
+            128: 128 * channel_multiplier,
+            256: 64 * channel_multiplier,
+            512: 32 * channel_multiplier,
+            1024: 16 * channel_multiplier,
+        }
+
+        convs = [ConvLayer(3, channels[size], 1)]
+        self.extra = Extra()
+
+        log_size = int(math.log(size, 2))
+
+        in_channel = channels[size]
+
+        for i in range(log_size, 2, -1):
+            out_channel = channels[2 ** (i - 1)]
+
+            convs.append(ResBlock(in_channel, out_channel, blur_kernel))
+
+            in_channel = out_channel
+
+        self.convs = nn.Sequential(*convs)
+        self.stddev_group = 4
+        self.stddev_feat = 1
+
+        self.final_conv = ConvLayer(in_channel + 1, channels[4], 3)
+        self.final_linear = nn.Sequential(
+            EqualLinear(channels[4] * 4 * 4, channels[4], activation='fused_lrelu'),
+            EqualLinear(channels[4], 1),
+        )
+
+
+    def forward(self, inp, ind = None, extra = None, flag = None, p_ind = None, real=False):
+
+        feat = []
+        for i in range(len(self.convs)):
+            if i == 0:
+                inp = self.convs[i](inp)
+            else:
+                temp1 = self.convs[i].conv1(inp)
+                if (flag > 0) and (temp1.shape[1] == 512) and (temp1.shape[2] == 32 or temp1.shape[2] == 16):
+                    feat.append(temp1)
+                temp2 = self.convs[i].conv2(temp1)
+                if (flag > 0) and (temp2.shape[1] == 512) and (temp2.shape[2] == 32 or temp2.shape[2] == 16):
+                    feat.append(temp2)
+                inp = self.convs[i](inp)
+                if (flag > 0) and len(feat) == 4:
+                    # We use 4 possible intermediate feature maps to be used for patch-based adversarial loss. Any one of them is selected randomly during training.
+                    inp = self.extra(feat[p_ind], p_ind)
+                    return inp, None
+
+        out = inp
+        batch, channel, height, width = out.shape
+        group = min(batch, self.stddev_group)
+        stddev = out.view(
+            group, -1, self.stddev_feat, channel // self.stddev_feat, height, width
+        )
+        stddev = torch.sqrt(stddev.var(0, unbiased=False) + 1e-8)
+        stddev = stddev.mean([2, 3, 4], keepdims=True).squeeze(2)
+        stddev = stddev.repeat(group, 1, height, width)
+        out = torch.cat([out, stddev], 1)
+
+        out = self.final_conv(out)
+        feat.append(out)
+        out = out.view(batch, -1)
+        out = self.final_linear(out)
+        return out, None 
+
+
+
+class Extra(nn.Module):
+    # to apply the patch-level adversarial loss, we take the intermediate discriminator feature maps of size [N x N x D], and convert them into [N x N x 1]
+
+    def __init__(self):
+        super().__init__()
+
+        self.new_conv = nn.ModuleList()
+        self.new_conv.append(ConvLayer(512, 1, 3))
+        self.new_conv.append(ConvLayer(512, 1, 3))
+        self.new_conv.append(ConvLayer(512, 1, 3))
+        self.new_conv.append(ConvLayer(512, 1, 3))
+
+    def forward(self, inp, ind):
+        out = self.new_conv[ind](inp)
         return out
