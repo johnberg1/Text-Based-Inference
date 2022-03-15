@@ -2,7 +2,6 @@ from torch.utils.data import Dataset
 from PIL import Image
 from utils import data_utils
 import random
-import torchvision.transforms as transforms
 
 class ImagesTextDataset(Dataset):
 
@@ -14,13 +13,10 @@ class ImagesTextDataset(Dataset):
         self.opts = opts
         self.train = train
         if train:
-            self.text_paths_dir = '/scratch/users/abaykal20/sam/SAM/mmcelebhq/train_captions/'
+            self.text_paths_dir = '/scratch/users/abaykal20/sam/SAM/overfit_caption_old'
         else:
-            self.text_paths_dir = '/scratch/users/abaykal20/sam/SAM/mmcelebhq/test_captions/'
+            self.text_paths_dir = '/scratch/users/abaykal20/sam/SAM/overfit_caption_old'
         self.text_paths = sorted(data_utils.make_text_dataset(self.text_paths_dir))
-        self.rsz_transform = transforms.Compose([
-				transforms.ToTensor(),
-				transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])])
 
     def __len__(self):
         #if self.train and self.opts is not None and self.opts.datasetSize is not None and len(self.source_paths) >= self.opts.datasetSize:
@@ -34,7 +30,6 @@ class ImagesTextDataset(Dataset):
 
         to_path = self.target_paths[index]
         to_im = Image.open(to_path).convert('RGB')
-        orig = self.rsz_transform(from_im)
         if self.target_transform:
             to_im = self.target_transform(to_im)
 
@@ -48,5 +43,5 @@ class ImagesTextDataset(Dataset):
         txt = txt_file.read().splitlines()
         txt = txt[0] #random.choice(txt)
 
-        return from_im, to_im, txt#, orig # orig if using discriminator
+        return from_im, to_im, txt
   

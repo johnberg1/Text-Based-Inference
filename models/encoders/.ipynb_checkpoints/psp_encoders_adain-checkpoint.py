@@ -5,7 +5,30 @@ from torch import nn
 from torch.nn import Conv2d, BatchNorm2d, PReLU, Sequential, Module
 
 from models.encoders.helpers import get_blocks, bottleneck_IR, bottleneck_IR_SE
-from models.stylegan2.model_s import EqualLinear
+from models.stylegan2.model import EqualLinear
+
+class AdaIN(nn.Module):
+    def __init__(self, in_channel, style_dim):
+        super().__init__()
+
+        self.norm = nn.InstanceNorm2d(in_channel)
+        #self.style_mapper = nn.Sequential(nn.Linear(style_dim, style_dim), nn.Linear(style_dim, style_dim), nn.Linear(style_dim, style_dim))
+        self.style_mapper = nn.Sequential(nn.Linear(style_dim, style_dim), nn.ReLU(), nn.Linear(style_dim, style_dim), nn.ReLU(), nn.Linear(style_dim, style_dim), nn.ReLU())
+        self.style_out = nn.Linear(style_dim, in_channel * 2)
+
+        #self.style_out.bias.data[:in_channel] = 1
+        #self.style_out.bias.data[in_channel:] = 0
+
+    def forward(self, input, style):
+        #style = torch.ones_like(style)
+        style = self.style_mapper(style)
+        style = self.style_out(style).unsqueeze(2).unsqueeze(3)
+        gamma_log, beta = style.chunk(2, 1)
+        gamma = gamma_log.exp()
+        out = self.norm(input)
+        out = gamma * out + beta
+
+        return out
 
 
 class GradualStyleBlock(Module):
@@ -55,8 +78,6 @@ class GradualStyleEncoder(Module):
         self.style_count = n_styles
         self.coarse_ind = 3
         self.middle_ind = 7
-        self.transformed_s_count = 26
-        self.affine_transforms = nn.ModuleList()
         for i in range(self.style_count):
             if i < self.coarse_ind:
                 style = GradualStyleBlock(512, 512, 16)
@@ -65,31 +86,11 @@ class GradualStyleEncoder(Module):
             else:
                 style = GradualStyleBlock(512, 512, 64)
             self.styles.append(style)
-            
-        channel_multiplier = 2
-        self.channels = {
-            4: 512,
-            8: 512,
-            16: 512,
-            32: 512,
-            64: 256 * channel_multiplier,
-            128: 128 * channel_multiplier,
-            256: 64 * channel_multiplier,
-            512: 32 * channel_multiplier,
-            1024: 16 * channel_multiplier,
-        }
-        
-        self.affine_transforms.append(EqualLinear(512, self.channels[4], bias_init=1))
-        self.affine_transforms.append(EqualLinear(512, self.channels[4], bias_init=1))
-        for i in range(3, 11):
-            in_channel1 = self.channels[2**(i-1)]
-            in_channel2 = self.channels[2**i]
-            self.affine_transforms.append(EqualLinear(512, in_channel1, bias_init=1))
-            self.affine_transforms.append(EqualLinear(512, in_channel2, bias_init=1))
-            self.affine_transforms.append(EqualLinear(512, in_channel2, bias_init=1))
-                
         self.latlayer1 = nn.Conv2d(256, 512, kernel_size=1, stride=1, padding=0)
         self.latlayer2 = nn.Conv2d(128, 512, kernel_size=1, stride=1, padding=0)
+        self.AdaIN1 = AdaIN(128, 512)
+        self.AdaIN2 = AdaIN(256, 512)
+        self.AdaIN3 = AdaIN(512, 512)
 
     def _upsample_add(self, x, y):
         '''Upsample and add two feature maps.
@@ -110,7 +111,7 @@ class GradualStyleEncoder(Module):
         _, _, H, W = y.size()
         return F.interpolate(x, size=(H, W), mode='bilinear', align_corners=True) + y
 
-    def forward(self, x):
+    def forward(self, x, txt_embed):
         x = self.input_layer(x)
 
         latents = []
@@ -123,6 +124,10 @@ class GradualStyleEncoder(Module):
                 c2 = x
             elif i == 23:
                 c3 = x
+                
+        c3 = self.AdaIN3(c3, txt_embed)
+        c2 = self.AdaIN2(c2, txt_embed)
+        c1 = self.AdaIN1(c1, txt_embed)
 
         for j in range(self.coarse_ind):
             latents.append(self.styles[j](c3))
@@ -134,21 +139,6 @@ class GradualStyleEncoder(Module):
         p1 = self._upsample_add(p2, self.latlayer2(c1))
         for j in range(self.middle_ind, self.style_count):
             latents.append(self.styles[j](p1))
-            
-        transformed_latents = []
-        j = 0
-        for i in range(0, 18, 2):
-            if i == 0:
-                transformed_latents.append(self.affine_transforms[j](latents[i]))
-                transformed_latents.append(self.affine_transforms[j+1](latents[i+1]))
-                j += 2
-            else:
-                transformed_latents.append(self.affine_transforms[j](latents[i]))
-                transformed_latents.append(self.affine_transforms[j+1](latents[i+1]))
-                transformed_latents.append(self.affine_transforms[j+2](latents[i+1]))
-                j += 3
 
-        # out = torch.stack(latents, dim=1)
-        # out = torch.stack(transformed_latents, dim=1)
-        # return out
-        return transformed_latents
+        out = torch.stack(latents, dim=1)
+        return out

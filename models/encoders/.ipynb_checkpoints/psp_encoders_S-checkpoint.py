@@ -5,7 +5,7 @@ from torch import nn
 from torch.nn import Conv2d, BatchNorm2d, PReLU, Sequential, Module
 
 from models.encoders.helpers import get_blocks, bottleneck_IR, bottleneck_IR_SE
-from models.stylegan2.model_s import EqualLinear
+from models.stylegan2.model import EqualLinear
 
 
 class GradualStyleBlock(Module):
@@ -56,7 +56,7 @@ class GradualStyleEncoder(Module):
         self.coarse_ind = 3
         self.middle_ind = 7
         self.transformed_s_count = 26
-        self.affine_transforms = nn.ModuleList()
+        self.affine_tranforms = nn.ModuleList()
         for i in range(self.style_count):
             if i < self.coarse_ind:
                 style = GradualStyleBlock(512, 512, 16)
@@ -79,14 +79,14 @@ class GradualStyleEncoder(Module):
             1024: 16 * channel_multiplier,
         }
         
-        self.affine_transforms.append(EqualLinear(512, self.channels[4], bias_init=1))
-        self.affine_transforms.append(EqualLinear(512, self.channels[4], bias_init=1))
+        self.affine_tranforms.append(EqualLinear(512, self.channels[4], bias_init=1))
+        self.affine_tranforms.append(EqualLinear(512, self.channels[4], bias_init=1))
         for i in range(3, 11):
             in_channel1 = self.channels[2**(i-1)]
             in_channel2 = self.channels[2**i]
-            self.affine_transforms.append(EqualLinear(512, in_channel1, bias_init=1))
-            self.affine_transforms.append(EqualLinear(512, in_channel2, bias_init=1))
-            self.affine_transforms.append(EqualLinear(512, in_channel2, bias_init=1))
+            self.affine_tranforms.append(EqualLinear(512, in_channel1, bias_init=1))
+            self.affine_tranforms.append(EqualLinear(512, in_channel2, bias_init=1))
+            self.affine_tranforms.append(EqualLinear(512, in_channel2, bias_init=1))
                 
         self.latlayer1 = nn.Conv2d(256, 512, kernel_size=1, stride=1, padding=0)
         self.latlayer2 = nn.Conv2d(128, 512, kernel_size=1, stride=1, padding=0)
@@ -137,18 +137,17 @@ class GradualStyleEncoder(Module):
             
         transformed_latents = []
         j = 0
-        for i in range(0, 18, 2):
-            if i == 0:
-                transformed_latents.append(self.affine_transforms[j](latents[i]))
-                transformed_latents.append(self.affine_transforms[j+1](latents[i+1]))
+        for i in range(self.style_count, 2):
+            if i == 1:
+                transformed_latents.append(self.affine_tranforms[j](latents[i]))
+                transformed_latents.append(self.affine_tranforms[j+1](latents[i+1]))
                 j += 2
             else:
-                transformed_latents.append(self.affine_transforms[j](latents[i]))
-                transformed_latents.append(self.affine_transforms[j+1](latents[i+1]))
-                transformed_latents.append(self.affine_transforms[j+2](latents[i+1]))
+                transformed_latents.append(self.affine_tranforms[j](latents[i]))
+                transformed_latents.append(self.affine_tranforms[j+1](latents[i+1]))
+                transformed_latents.append(self.affine_tranforms[j+2](latents[i+1]))
                 j += 3
 
         # out = torch.stack(latents, dim=1)
-        # out = torch.stack(transformed_latents, dim=1)
-        # return out
-        return transformed_latents
+        out = torch.stack(transformed_latents, dim=1)
+        return out

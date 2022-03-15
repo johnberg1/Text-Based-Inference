@@ -7,7 +7,30 @@ from torch.nn import Conv2d, BatchNorm2d, PReLU, Sequential, Module
 from models.encoders.helpers import get_blocks, bottleneck_IR, bottleneck_IR_SE
 from models.stylegan2.model_s import EqualLinear
 
+class AdaIN(nn.Module):
+    def __init__(self, in_channel, style_dim):
+        super().__init__()
 
+        self.norm = nn.InstanceNorm2d(in_channel)
+        #self.style_mapper = nn.Sequential(nn.Linear(style_dim, style_dim), nn.Linear(style_dim, style_dim), nn.Linear(style_dim, style_dim))
+        self.style_mapper = nn.Sequential(nn.Linear(style_dim, style_dim), nn.ReLU(), nn.Linear(style_dim, style_dim), nn.ReLU(), nn.Linear(style_dim, style_dim), nn.ReLU())
+        self.style_out = nn.Linear(style_dim, in_channel * 2)
+
+        #self.style_out.bias.data[:in_channel] = 1
+        #self.style_out.bias.data[in_channel:] = 0
+
+    def forward(self, input, style):
+        #style = torch.ones_like(style)
+        style = self.style_mapper(style)
+        style = self.style_out(style).unsqueeze(2).unsqueeze(3)
+        gamma_log, beta = style.chunk(2, 1)
+        gamma = gamma_log.exp()
+        out = self.norm(input)
+        out = gamma * out + beta
+
+        return out
+
+    
 class GradualStyleBlock(Module):
     def __init__(self, in_c, out_c, spatial):
         super(GradualStyleBlock, self).__init__()
@@ -90,6 +113,9 @@ class GradualStyleEncoder(Module):
                 
         self.latlayer1 = nn.Conv2d(256, 512, kernel_size=1, stride=1, padding=0)
         self.latlayer2 = nn.Conv2d(128, 512, kernel_size=1, stride=1, padding=0)
+        self.AdaIN1 = AdaIN(128, 512)
+        self.AdaIN2 = AdaIN(256, 512)
+        self.AdaIN3 = AdaIN(512, 512)
 
     def _upsample_add(self, x, y):
         '''Upsample and add two feature maps.
@@ -110,7 +136,7 @@ class GradualStyleEncoder(Module):
         _, _, H, W = y.size()
         return F.interpolate(x, size=(H, W), mode='bilinear', align_corners=True) + y
 
-    def forward(self, x):
+    def forward(self, x, txt_embed):
         x = self.input_layer(x)
 
         latents = []
@@ -123,6 +149,10 @@ class GradualStyleEncoder(Module):
                 c2 = x
             elif i == 23:
                 c3 = x
+                
+        c3 = self.AdaIN3(c3, txt_embed)
+        c2 = self.AdaIN2(c2, txt_embed)
+        c1 = self.AdaIN1(c1, txt_embed)
 
         for j in range(self.coarse_ind):
             latents.append(self.styles[j](c3))
@@ -150,5 +180,4 @@ class GradualStyleEncoder(Module):
 
         # out = torch.stack(latents, dim=1)
         # out = torch.stack(transformed_latents, dim=1)
-        # return out
         return transformed_latents
